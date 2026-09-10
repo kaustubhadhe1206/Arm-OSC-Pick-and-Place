@@ -103,12 +103,19 @@ class FrankaOSCPickPlaceEnv(gymnasium.Env):
         self.object_spawn_y_range = (0.075, 0.375)
         self.object_floor_z = 0.015  # half the box's side length, resting flush on the floor
 
-        # PLACE zone: mirrored across the y axis (same x range, negated y
-        # range) — the opposite side of the robot from the pick zone, same
-        # size, same verified safe-clearance/reach properties (mirroring a
-        # symmetric geometry doesn't change either).
+        # PLACE zone: same x range and size as the pick zone, on the
+        # opposite side of the robot (negative y). Pushed further out than
+        # a pure mirror (which would leave only a 0.15m gap between the two
+        # zones' nearest edges) so the two zones are clearly, visibly
+        # separated rather than nearly touching across the robot's
+        # centerline — the nearest-edge gap is now 0.225m (0.075 to
+        # -0.15), up from 0.15m. Worst-case pick-to-place distance (opposite
+        # far corners) is now ~0.88m, still comfortably under the arm's
+        # ~0.9m true max reach (checked directly, not assumed, since this
+        # was the tightest constraint on how far the zones could be pushed
+        # apart).
         self.place_target_x_range = (0.225, 0.525)
-        self.place_target_y_range = (-0.375, -0.075)
+        self.place_target_y_range = (-0.45, -0.15)
 
         # radius within which the object counts as "at" the place target —
         # matches close_scale below, i.e. the same precision the proximity
@@ -142,7 +149,13 @@ class FrankaOSCPickPlaceEnv(gymnasium.Env):
         # target, not treated as needing to restart the pick phase.
         self.has_grasped_stably = False
 
-        self.max_episode_steps = 600
+        # At n_substeps=20 (40ms/step), 700 steps = 28 simulated seconds.
+        # Raised from 600 (24s) alongside widening the pick/place
+        # separation above — the worst-case carry distance grew modestly
+        # (~0.81m -> ~0.88m), so this adds proportional margin rather than
+        # a specific "N seconds" target picked without reference to the
+        # actual distances involved.
+        self.max_episode_steps = 700
         self.current_step = 0
 
         self.use_camera = use_camera

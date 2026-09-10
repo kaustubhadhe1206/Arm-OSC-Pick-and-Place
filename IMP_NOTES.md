@@ -252,3 +252,35 @@ attempted, mirroring 5-arm_project_osc's discipline:
 `total_timesteps=1_000_000` is a starting default carried over from the
 grasp-only task — this is a longer, harder task, so treat that number as
 a first checkpoint to evaluate at, not an assumed sufficient budget.
+
+## Incident #2 — Widened pick/place separation and episode budget
+
+**Change:** the place zone (`place_target_y_range`) moved from a pure
+mirror of the pick zone (`(-0.375, -0.075)`, only a 0.15m gap between the
+two zones' nearest edges) to `(-0.45, -0.15)` — a 0.225m gap — so the two
+zones are visibly, clearly separated rather than nearly touching across
+the robot's centerline. Checked the worst-case pick-to-place distance
+(opposite far corners) directly before committing to this: ~0.88m, still
+under the arm's ~0.9m true max reach. `max_episode_steps` raised from 600
+to 700 (28s) proportionally to the modest increase in worst-case carry
+distance (~0.81m -> ~0.88m) — not picked to match a specific "N seconds"
+figure requested without reference to the actual distances involved (24s
+was already MORE generous than a literal "make it 8 seconds" would give,
+so that request was interpreted as "give it more room for the added
+distance," which is what this does).
+
+**Verification:** re-ran `scripted_pick_place_check.py` (13 trials across
+two batches): 9/13 (~69%) succeeded end-to-end, consistent with the
+original (pre-widening) 75% baseline — the lower rate in the first batch
+of 8 (5/8, 62.5%) was small-sample variance, not a systematic regression;
+the second batch of 5 alone was 4/5 (80%). The one new failure type seen
+("FAILED" with no qualifier, meaning it got all the way through release
+and retreat but never settled within the hold budget) did not reproduce
+in a full detailed-output pass — likely also variance, not a new
+geometry-specific problem, but worth a second look if it becomes frequent
+once real training data is available.
+
+**Status:** any Colab session with demonstrations already collected or
+training already started needs to redo both — the zone geometry changed,
+so old `demonstrations.npz` reflects the previous, closer zone layout and
+is no longer representative of the current task.
