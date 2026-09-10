@@ -222,3 +222,33 @@ block anything — the real task never requires a purely static hold — but
 worth knowing about if the RL-trained policy is ever seen "fidgeting"
 slightly while holding rather than sitting still, which would probably be
 the trained policy independently discovering the same workaround.
+
+## Project setup complete, not yet trained
+
+Full pipeline built and locally verified before any training was
+attempted, mirroring 5-arm_project_osc's discipline:
+- `envs/franka_osc_pick_place_env.py` — passes `check_env()` and a
+  random-action smoke test.
+- `scripted_pick_place_check.py` — 6/8 (75%) end-to-end success across
+  random seeds, confirming achievability (incident #1 above).
+- `collect_demonstrations.py` — adapted from the scripted check, records
+  full transitions from successful episodes only; tested at small scale
+  (5 successes / 6 attempts, 83%, 1379 transitions).
+- `train_osc_pick_place_bc_parallel.py` — same proven architecture as
+  5-arm_project_osc's version (vectorized replay-buffer seeding, actor
+  BC-pretraining, SAC fine-tuning with `target_entropy=-1.0`,
+  `learning_starts=2000`). Full pipeline (seed -> pretrain -> short
+  `model.learn()`) smoke-tested end-to-end without crashing before
+  committing.
+- `test_osc_pick_place.py` — viewer script with both zones AND the exact
+  randomized place target visualized (green=pick zone, blue=place zone,
+  yellow=place target point), all drawn from the same live env attributes
+  the reward function uses, so they can't drift out of sync.
+- Repo pushed to `https://github.com/kaustubhadhe1206/Arm-OSC-Pick-and-Place.git`;
+  `colab_train.ipynb` set up mirroring 5-arm_project_osc's Drive-symlinked-
+  checkpoints structure.
+
+**Not yet done**: no training has been run. `train_osc_pick_place_bc_parallel.py`'s
+`total_timesteps=1_000_000` is a starting default carried over from the
+grasp-only task — this is a longer, harder task, so treat that number as
+a first checkpoint to evaluate at, not an assumed sufficient budget.
