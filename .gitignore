@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+checkpoints/
+*.zip
+mjmodel.xml
+mjmodel.mjb
+demonstrations.npz
