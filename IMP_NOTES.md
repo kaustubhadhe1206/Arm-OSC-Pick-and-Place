@@ -284,3 +284,70 @@ once real training data is available.
 training already started needs to redo both — the zone geometry changed,
 so old `demonstrations.npz` reflects the previous, closer zone layout and
 is no longer representative of the current task.
+
+## Incident #3 — One-time BC pretraining got forgotten over 1M steps of RL
+
+**Symptom:** the user ran the original `train_osc_pick_place_bc_parallel.py`
+(one-time BC pretraining + replay-buffer seeding, then plain SAC) for the
+full 1,000,000 steps (1664 episodes) on the pre-widening zone layout.
+`ep_len_mean` stayed pinned at the episode cap for EVERY episode — zero
+pick-and-place successes across the entire run. `ep_rew_mean` improved
+substantially (-204 -> -35.8) and `ent_coef` collapsed toward 0 (0.0115)
+along the way. Testing the final checkpoint: the gripper never grabbed the
+object at all, just vibrated near it indefinitely until timeout.
+
+**Diagnosis:** the BC-pretrained actor was independently verified (before
+any RL training) to reproduce the demonstrated behavior correctly — so
+this isn't "BC didn't work," it's "RL fine-tuning drifted away from a
+working BC-initialized policy over the course of training, into a worse
+local optimum (chattering) that happened to score well on the DENSE
+shaping reward without ever completing the task, and since it never once
+succeeded, nothing pulled it back toward the real objective." Two
+mechanisms plausibly compound this: (1) a ONE-TIME pretraining step puts
+no ongoing pressure on the actor once RL gradients start pulling it
+elsewhere — the initial bias is not maintained; (2) the demonstration
+transitions seeded into the replay buffer are a shrinking fraction of it
+as more on-policy (increasingly wrong, in this failure mode) experience
+accumulates — buffer_size is 1,000,000 total vs ~100-150k demo
+transitions, so random batch sampling increasingly reflects on-policy
+data over time, diluting the demonstrations' influence on the critic too,
+not just the actor.
+
+**Fix (`bc_regularized_sac.py`, new file):** a `SAC` subclass
+(`BCRegularizedSAC`) that keeps an ONGOING behavior-cloning loss term
+active in the actor's loss for the entire training run, not just as a
+one-time pretraining step. Implemented by copying SB3's own `SAC.train()`
+method verbatim (read directly from source, not reimplemented from
+memory/guess) and adding one term: each gradient step, in addition to the
+normal actor loss, sample a batch from a SEPARATE, FIXED copy of the
+demonstration (obs, action) pairs (held outside the replay buffer, so its
+influence can't be diluted by buffer composition drift) and add
+`bc_weight * MSE(actor's predicted action, demonstrated action)` to the
+actor's loss before backprop. This is a minimal, targeted fix for the
+specific observed failure mode — not full offline-RL machinery like
+AWAC/CQL.
+
+`bc_weight=100.0` is a first-guess starting point, not empirically tuned:
+actor_loss in this task's early logs ranged roughly -95 to +5 (Q-value-
+driven, scales with reward/horizon), while a raw BC MSE loss is typically
+~0.01-0.1 — at weight=100 the BC term contributes ~1-10, meaningful but
+not dominant relative to the Q-based term. A new `train/bc_loss` log field
+was added specifically so this can be monitored during training rather
+than inferred indirectly — if the policy still drifts, raise this weight
+before concluding the whole approach doesn't work.
+
+The existing one-time replay-buffer seeding and actor pretraining are KEPT
+(not replaced) — they give a strong initial bias; the ongoing
+regularization prevents that bias from being fully forgotten later, it
+doesn't replace the head start of not starting from random weights.
+
+**Verification:** full pipeline (seed buffer -> pretrain actor -> set
+ongoing BC data -> `model.learn()`) smoke-tested end-to-end without
+crashing; confirmed `train/bc_loss` is actually recorded during training
+(not silently dropped) and that `train/actor_loss` reflects the combined
+(Q-term + weighted BC term) value as intended.
+
+**Status:** not yet run/verified against a real training run — this
+addresses a specific, evidenced failure mode (verified drift away from a
+working BC policy), but the `bc_weight=100.0` starting value has not been
+validated empirically yet.

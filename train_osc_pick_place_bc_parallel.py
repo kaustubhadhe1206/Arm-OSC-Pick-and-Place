@@ -6,6 +6,17 @@
 # sequence than grasp-only — if anything a harder exploration problem, not
 # an easier one. See IMP_NOTES.md.
 #
+# UPDATED (IMP_NOTES.md incident #3): a first full 1M-step run of this
+# script (one-time BC pretraining + replay-buffer seeding, then plain SAC)
+# NEVER once completed a successful pick-and-place across 1664 episodes,
+# despite ep_rew_mean improving substantially and the demonstrated behavior
+# being verified to work — the policy drifted away from the BC-initialized
+# behavior into gripper-chattering as entropy collapsed, with no successes
+# ever occurring to reinforce it back. Now uses BCRegularizedSAC
+# (bc_regularized_sac.py), which keeps an ongoing BC loss term active in
+# the actor's loss for the ENTIRE run, not just as a one-time pretraining
+# step — see that file's module docstring for the full reasoning.
+#
 # Run collect_demonstrations.py first to produce demonstrations.npz.
 #
 # IMPORTANT (Windows-specific): multiprocessing on Windows uses "spawn",
@@ -24,7 +35,7 @@ import torch
 import torch.nn.functional as F
 
 from franka_osc_pick_place_env import FrankaOSCPickPlaceEnv
-from stable_baselines3 import SAC
+from bc_regularized_sac import BCRegularizedSAC
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
@@ -128,7 +139,7 @@ if __name__ == "__main__":
     # same hyperparameters as 5-arm_project_osc's proven config
     # (target_entropy=-1.0 for sustained exploration, device="cpu" since a
     # GPU doesn't help small MLPs on CPU-bound MuJoCo physics)
-    model = SAC(
+    model = BCRegularizedSAC(
         "MlpPolicy",
         env,
         learning_rate=3e-4,
@@ -145,6 +156,10 @@ if __name__ == "__main__":
 
     seed_replay_buffer(model, demo)
     pretrain_actor(model, demo)
+    # keeps the SAME BC pull active for the entire run (see
+    # bc_regularized_sac.py) -- the seeding/pretraining above give a strong
+    # INITIAL bias, this prevents it from being fully forgotten later
+    model.set_bc_demo_data(demo["obs"], demo["actions"])
 
     print(f"Training started (OSC pick-and-place, BC-warm-started, {N_ENVS} parallel environments)...")
 
