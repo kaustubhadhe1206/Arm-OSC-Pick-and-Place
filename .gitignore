@@ -3,6 +3,11 @@ __pycache__/
 *.pyc
 checkpoints/
 *.zip
+# frozen, already-trained model deliberately committed (not a training
+# checkpoint) -- HierarchicalPickPlaceEnv loads it at runtime, so it needs
+# to be in the repo, not gitignored like other .zip files
+!pretrained/sac_franka_grasp_frozen.zip
 mjmodel.xml
 mjmodel.mjb
 demonstrations.npz
+place_demonstrations.npz

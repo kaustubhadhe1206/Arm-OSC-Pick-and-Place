@@ -347,7 +347,91 @@ crashing; confirmed `train/bc_loss` is actually recorded during training
 (not silently dropped) and that `train/actor_loss` reflects the combined
 (Q-term + weighted BC term) value as intended.
 
-**Status:** not yet run/verified against a real training run — this
-addresses a specific, evidenced failure mode (verified drift away from a
-working BC policy), but the `bc_weight=100.0` starting value has not been
-validated empirically yet.
+**Status:** run to completion (1M steps). Diagnosis update below
+(incident #4) — `bc_loss` stayed low the entire run, ruling out "weight
+too weak," but a subtler problem was found instead.
+
+## Incident #4 — Low average BC loss hid a rare-event class-imbalance problem
+
+**Symptom:** the `BCRegularizedSAC` run (incident #3's fix) completed all
+1M steps. `bc_loss` stayed low throughout (0.005-0.009 early, actually
+dropping to 0.0005-0.003 by mid/late training) — the anchor was NOT
+overpowered by the Q-gradient, ruling out the obvious "weight too weak"
+explanation. Yet the tested final checkpoint still showed the arm
+positioning itself precisely above the object, then vibrating instead of
+closing the gripper — the same failure as before. One hopeful sign in the
+log: `ep_len_mean` briefly dipped to 693/695 around 913k-918k steps
+(episodes ~1308-1312) before returning to 700, meaning at least 1-2
+episodes actually succeeded — the first evidence of ANY real completion
+across three full 1M-step runs (the original pure-RL run, the plain-BC
+run, and this one) — but not reliably, and not sustained by the final
+checkpoint.
+
+**Diagnosis:** "low average BC loss across the demo dataset" hides a real
+imbalance. Each successful ~250-350-step episode has maybe 100+ easy,
+plentiful "moving toward the object/target" transitions for every rare,
+decisive "close the gripper now" or "release now" transition. Sampling
+demo batches uniformly at random (as `bc_regularized_sac.py`'s first
+version did) lets the network minimize AVERAGE loss almost entirely by
+nailing the easy majority, while still imitating the rare, critical
+decision points poorly — exactly where "positions correctly, then
+vibrates instead of committing" would show up. This is a classic
+imitation-learning class-imbalance problem, not an insufficient-weight
+problem — raising `bc_weight` further would not have fixed it, since the
+issue isn't overall pull strength, it's which transitions that pull is
+concentrated on.
+
+**Fix — hierarchical decomposition, not another reweighting scheme.**
+Considered oversampling/upweighting the rare critical transitions in the
+BC loss as a direct fix, but chose a more fundamental one instead: STOP
+learning the pick sub-skill at all, since it's already solved.
+`5-arm_project_osc`'s grasp-only model is verified 100%-reliable, and
+pick-and-place's observation was deliberately designed as that exact
+16-dim grasp observation with 6 dims appended (place_target,
+object_to_place_target) — confirmed feature-for-feature identical, in the
+same order, not assumed, before relying on it. So the frozen model can
+be fed `obs[:16]` with zero adaptation.
+
+- `pretrained/sac_franka_grasp_frozen.zip` (new, committed to the repo):
+  a copy of `5-arm_project_osc`'s winning `sac_franka_osc_grasp_bc_parallel_1000000_steps`
+  checkpoint (the one confirmed 100% successful in testing).
+- `envs/hierarchical_pick_place_env.py` (new): wraps `FrankaOSCPickPlaceEnv`
+  so `reset()` auto-pilots the ENTIRE pick phase internally via the frozen
+  model (retrying fresh resets up to 5 times on the rare miss, keeping
+  pick failures invisible to the outer trainer entirely) and only returns
+  once `has_grasped_stably` is true — the outer RL trainer never sees the
+  pick phase, only the carry-and-place portion that starts from an
+  already-grasped state. Verified directly: 5/5 auto-piloted pick resets
+  succeeded, ~95-135 steps each (matching the original model's own
+  ep_len_mean~112), each taking well under a second.
+- `collect_place_demonstrations.py` (new): scripts ONLY the
+  carry/descend/release/settle sequence, since `env.reset()` already
+  returns a successfully-grasped starting state. 100% success (5/5) in
+  local testing — meaningfully more reliable than the full-sequence
+  scripted routine's 75-85%, since pick failures no longer count against
+  it at all.
+- `train_hierarchical_place_bc_parallel.py` (new, fully self-contained per
+  this project's standing convention — does not import from the other
+  training scripts even though `seed_replay_buffer`/`pretrain_actor` are
+  identical logic, duplicated instead): same `BCRegularizedSAC` strategy,
+  applied to `HierarchicalPickPlaceEnv` and the place-only demonstrations.
+- `test_hierarchical_place.py` (new): viewer script. Deliberately does
+  NOT use `HierarchicalPickPlaceEnv`'s auto-piloted `reset()` for
+  visualization — that would skip the entire pick phase invisibly inside
+  one `reset()` call with no `viewer.sync()` in between, showing nothing.
+  Instead drives the inner env directly, manually switching between the
+  frozen pick model (on `obs[:16]`) and the trained place model (on the
+  full observation) based on `env.has_grasped_stably`, so both phases are
+  actually visible.
+
+Full pipeline (seed buffer → pretrain actor → set BC data → `model.learn()`)
+smoke-tested end-to-end with both `DummyVecEnv` and `SubprocVecEnv` (4
+parallel workers, matching real training) without crashing — including
+verifying each worker process can independently load the frozen model on
+`device="cpu"` without the CUDA/multiprocessing conflict documented in
+`4-arm_project` incident #27.
+
+**Status:** not yet run against real training — this is a structural fix
+(remove the failing sub-problem from the learning problem entirely) rather
+than a tuning adjustment, and is the most direct way to actually reuse
+5-arm_project_osc's proven success rather than trying to re-derive it.
